@@ -6,10 +6,11 @@
 using namespace cv;
 using namespace std;
 
-Mat initialImageProcessing(Mat frame);
+Mat initialImageProcessing(Mat &frame, Rect &faceRect);
 void detectTheEyes(Mat &face, Point &leftEye, Point &rightEye, CascadeClassifier &eyesCascade1, CascadeClassifier &eyesCascade2);
 void detectObj(const Mat &img, CascadeClassifier &cascade, Rect &obj, int scaledw);
 void equilizefaceHalves(Mat &faceimg);
+double getSimilarity(const Mat face1, const Mat face2);
 
 CascadeClassifier face_cascade;
 CascadeClassifier eyes_cascade1, eyes_cascade2;
@@ -19,6 +20,10 @@ string eyes_cascadeName2 = "../haarcascades/haarcascade_eye_tree_eyeglasses.xml"
 
 int main(int argc, char *argv[])
 {
+    Mat previous_preprocessed_face;
+    vector<Mat> preprocessedFaces;
+    vector<int> labels;
+    double pre_time = 0;
     try
     {
         face_cascade.load(face_cascadeName);
@@ -46,7 +51,7 @@ int main(int argc, char *argv[])
     for (;;)
     {
         Mat frame;
-
+        Rect faceRect;
         capture >> frame;
 
         if (frame.empty())
@@ -54,110 +59,37 @@ int main(int argc, char *argv[])
             cout << "No frame" << endl;
             break;
         }
-        Mat img;
-        const int DetectionWidth = 320;
-        float scale = frame.cols / (float)DetectionWidth;
-
-        if (frame.cols > DetectionWidth)
+        Mat preprocessedFace = initialImageProcessing(frame, faceRect);
+        if (preprocessedFace.data)
         {
-            int scaledHeight = cvRound(frame.rows / scale);
-            resize(frame, img, Size(DetectionWidth, scaledHeight));
-        }
-        else
-            img = frame;
-        Mat equilizedimg = initialImageProcessing(img);
-        vector<Rect> faces;
-        face_cascade.detectMultiScale(equilizedimg, faces, 1.1f, 4, CASCADE_FIND_BIGGEST_OBJECT, Size(20, 20));
-
-        if (frame.cols > DetectionWidth)
-        {
-            for (int i = 0; i < faces.size(); i++)
+            double IMAGE_DIFF = 10000000000.0;
+            if (previous_preprocessed_face.data)
             {
-                int scaled_x, scaled_y, scaled_h, scaled_w;
+                IMAGE_DIFF = getSimilarity(preprocessedFace, previous_preprocessed_face);
+            }
+            double currentTime = (double)getTickCount();
+            double TIME_DIFF = (currentTime - pre_time) / getTickFrequency();
 
-                Point Pt1(faces[i].x, faces[i].y);
-                Point Pt2(faces[i].height + faces[i].x, faces[i].width + faces[i].y);
+            if ((IMAGE_DIFF > 0.3) && (TIME_DIFF > 1.0))
+            {
+                Mat mirroredFace;
+                flip(preprocessedFace, mirroredFace, 1);
 
-                scaled_x = cvRound(faces[i].x * scale);
-                scaled_y = cvRound(faces[i].y * scale);
-                scaled_w = cvRound(faces[i].width * scale);
-                scaled_h = cvRound(faces[i].height * scale);
+                preprocessedFaces.push_back(preprocessedFace);
+                preprocessedFaces.push_back(mirroredFace);
+                labels.push_back(0);
+                labels.push_back(0);
 
-                Point Pt3(scaled_x, scaled_y);
-                Point Pt4(scaled_h + scaled_x, scaled_w + scaled_y);
+                previous_preprocessed_face = preprocessedFace;
+                pre_time = currentTime;
+                rectangle(frame, faceRect, Scalar(0, 255, 0), 2, 8, 0);
 
-                rectangle(img, Pt1, Pt2, Scalar(0, 255, 0), 2, 8, 0);
-                rectangle(frame, Pt3, Pt4, Scalar(0, 255, 0), 2, 8, 0);
+                if (preprocessedFaces.size() == 50)
+                    break;
 
-                Mat faceROI = equilizedimg(faces[i]);
-                imshow("faceimg", faceROI);
-                vector<Rect> eyes;
-                Point leftEye, rightEye;
-                //-- In each face, detect eyes
-                detectTheEyes(faceROI, leftEye, rightEye, eyes_cascade1, eyes_cascade2);
-                if (leftEye.x > 0 && rightEye.x > 0)
-                {
-                    cout << "both detected" << endl;
-                    Point center1(faces[i].x + leftEye.x, faces[i].y + leftEye.y);
-                    Point center2(faces[i].x + rightEye.x, faces[i].y + rightEye.y);
-                    int radius = 20;
-                    circle(img, center1, radius, Scalar(255, 0, 0), 4, 8, 0);
-                    circle(img, center2, radius, Scalar(255, 0, 0), 4, 8, 0);
-                    //Center b2n the 2 eyes
-                    Point2f eyesCenter;
-                    eyesCenter.x = (leftEye.x + rightEye.x) * 0.5f;
-                    eyesCenter.y = (leftEye.y + rightEye.y) * 0.5f;
-                    //Angle b2n the 2 eyes
-                    double dy = rightEye.y - leftEye.y;
-                    double dx = rightEye.x - leftEye.x;
-                    double len = sqrt(dx * dx + dy * dy);
-                    //Convert radians to degrees
-
-                    double angle = atan2(dy, dx) * 180.0 / CV_PI;
-
-                    const double DESIRED_LEFT_EYE_X = 0.16;
-                    const double DESIRED_LEFT_EYE_Y = 0.14;
-                    const double DESIRED_RIGHT_EYE_X = (1.0f - 0.16);
-                    //const double DESIRED_RIGHT_EYE_X = (0.8);
-
-                    const int DESIRED_FACE_WIDTH = 70;
-                    const int DESIRED_FACE_HEIGHT = 70;
-
-                    double desired_len = (DESIRED_RIGHT_EYE_X - DESIRED_LEFT_EYE_X) * DESIRED_FACE_WIDTH;
-                    double scale = desired_len / len;
-
-                    Mat rotated_mat = getRotationMatrix2D(eyesCenter, angle, scale);
-
-                    double ex = DESIRED_FACE_WIDTH * 0.5f - eyesCenter.x;
-                    double ey = DESIRED_FACE_HEIGHT * DESIRED_LEFT_EYE_Y - eyesCenter.y;
-
-                    rotated_mat.at<double>(0, 2) += ex;
-                    rotated_mat.at<double>(1, 2) += ey;
-
-                    Mat warped = Mat(DESIRED_FACE_HEIGHT, DESIRED_FACE_WIDTH, CV_8U, Scalar(128));
-                    imshow("Face img b4 pre", faceROI);
-                    warpAffine(faceROI, warped, rotated_mat, warped.size());
-                    imshow("Face img afta pre", warped);
-                    equilizefaceHalves(warped);
-                    imshow("fame img equilized halves", warped);
-
-                    Mat filtered = Mat(warped.size(), CV_8U);
-                    bilateralFilter(warped, filtered, 0, 20.0, 2.0);
-                    imshow("filtered", filtered);
-
-                    Mat mask = Mat(warped.size(), CV_8U, Scalar(0));
-                    Point faceCenter = Point(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.4));
-                    Size size = Size(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.8));
-                    ellipse(mask, faceCenter, size, 0, 0, 360, Scalar(255), FILLED);
-
-                    Mat dest = Mat(warped.size(), CV_8U, Scalar(128));
-                    filtered.copyTo(dest, mask);
-                    imshow("masked", dest);
-                }
+                cout << "no:" << preprocessedFaces.size() << endl;
             }
         }
-        imshow("Equilizedimage", equilizedimg);
-        imshow("original", img);
         imshow("ORfarme", frame);
 
         char c = (char)waitKey(25);
@@ -165,21 +97,119 @@ int main(int argc, char *argv[])
         if (c == 27)
             break;
     }
+    cout << "Faces collected..." << endl;
     return 0;
 }
 
-Mat initialImageProcessing(Mat frame)
+Mat initialImageProcessing(Mat &frame, Rect &faceRect)
 {
+    Mat img;
+    const int DetectionWidth = 320;
+    float scale = frame.cols / (float)DetectionWidth;
+
+    if (frame.cols > DetectionWidth)
+    {
+        int scaledHeight = cvRound(frame.rows / scale);
+        resize(frame, img, Size(DetectionWidth, scaledHeight));
+    }
+
     Mat gray;
+
     if (frame.channels() == 3)
-        cvtColor(frame, gray, COLOR_BGR2GRAY);
+        cvtColor(img, gray, COLOR_BGR2GRAY);
     else if (frame.channels() == 4)
-        cvtColor(frame, gray, COLOR_BGRA2GRAY);
+        cvtColor(img, gray, COLOR_BGRA2GRAY);
     else
-        gray = frame;
+        gray = img;
+
     Mat equilizedImage;
+
     equalizeHist(gray, equilizedImage);
-    return equilizedImage;
+
+    vector<Rect> faces;
+
+    face_cascade.detectMultiScale(equilizedImage, faces, 1.1f, 4, CASCADE_FIND_BIGGEST_OBJECT, Size(20, 20));
+
+    Mat dest;
+
+    for (int i = 0; i < faces.size(); i++)
+    {
+        int scaled_x, scaled_y, scaled_h, scaled_w;
+        scaled_x = cvRound(faces[i].x * scale);
+        scaled_y = cvRound(faces[i].y * scale);
+        scaled_w = cvRound(faces[i].width * scale);
+        scaled_h = cvRound(faces[i].height * scale);
+        Point Pt1(faces[i].x, faces[i].y);
+        Point Pt2(faces[i].height + faces[i].x, faces[i].width + faces[i].y);
+
+        Point Pt3(scaled_x, scaled_y);
+        Point Pt4(scaled_h + scaled_x, scaled_w + scaled_y);
+
+        rectangle(img, Pt1, Pt2, Scalar(0, 255, 0), 2, 8, 0);
+        rectangle(frame, Pt3, Pt4, Scalar(0, 255, 0), 2, 8, 0);
+        Mat faceROI = equilizedImage(faces[i]);
+        faceRect = Rect(faces[i].x, faces[i].y, faces[i].width, faces[i].height);
+        vector<Rect> eyes;
+        Point leftEye, rightEye;
+        //-- In each face, detect eyes
+        detectTheEyes(faceROI, leftEye, rightEye, eyes_cascade1, eyes_cascade2);
+        if (leftEye.x > 0 && rightEye.x > 0)
+        {
+            cout << "both detected" << endl;
+            Point center1(faces[i].x + leftEye.x, faces[i].y + leftEye.y);
+            Point center2(faces[i].x + rightEye.x, faces[i].y + rightEye.y);
+            circle(img, center1, 15, Scalar(255, 0, 0), 4, 8, 0);
+            circle(img, center2, 15, Scalar(255, 0, 0), 4, 8, 0);
+            //Center b2n the 2 eyes
+            Point2f eyesCenter;
+            eyesCenter.x = (leftEye.x + rightEye.x) * 0.5f;
+            eyesCenter.y = (leftEye.y + rightEye.y) * 0.5f;
+            //Angle b2n the 2 eyes
+            double dy = rightEye.y - leftEye.y;
+            double dx = rightEye.x - leftEye.x;
+            double len = sqrt(dx * dx + dy * dy);
+            //Convert radians to degrees
+
+            double angle = atan2(dy, dx) * 180.0 / CV_PI;
+
+            const double DESIRED_LEFT_EYE_X = 0.16;
+            const double DESIRED_LEFT_EYE_Y = 0.14;
+            const double DESIRED_RIGHT_EYE_X = (1.0f - 0.16);
+            //const double DESIRED_RIGHT_EYE_X = (0.8);
+
+            const int DESIRED_FACE_WIDTH = 70;
+            const int DESIRED_FACE_HEIGHT = 70;
+
+            double desired_len = (DESIRED_RIGHT_EYE_X - DESIRED_LEFT_EYE_X) * DESIRED_FACE_WIDTH;
+            double scale = desired_len / len;
+
+            Mat rotated_mat = getRotationMatrix2D(eyesCenter, angle, scale);
+
+            double ex = DESIRED_FACE_WIDTH * 0.5f - eyesCenter.x;
+            double ey = DESIRED_FACE_HEIGHT * DESIRED_LEFT_EYE_Y - eyesCenter.y;
+
+            rotated_mat.at<double>(0, 2) += ex;
+            rotated_mat.at<double>(1, 2) += ey;
+
+            Mat warped = Mat(DESIRED_FACE_HEIGHT, DESIRED_FACE_WIDTH, CV_8U, Scalar(128));
+            warpAffine(faceROI, warped, rotated_mat, warped.size());
+            equilizefaceHalves(warped);
+
+            Mat filtered = Mat(warped.size(), CV_8U);
+            bilateralFilter(warped, filtered, 0, 20.0, 2.0);
+
+            Mat mask = Mat(warped.size(), CV_8U, Scalar(0));
+            Point faceCenter = Point(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.4));
+            Size size = Size(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.8));
+            ellipse(mask, faceCenter, size, 0, 0, 360, Scalar(255), FILLED);
+
+            dest = Mat(warped.size(), CV_8U, Scalar(128));
+            filtered.copyTo(dest, mask);
+            imshow("Image", img);
+            imshow("masked", dest);
+        }
+    }
+    return dest;
 }
 void detectTheEyes(Mat &face, Point &leftEye, Point &rightEye, CascadeClassifier &eyesCascade1, CascadeClassifier &eyesCascade2)
 {
@@ -301,3 +331,106 @@ void equilizefaceHalves(Mat &faceImg)
         }
     }
 }
+
+double getSimilarity(const Mat face1, const Mat face2)
+{
+    if (face1.rows > 0 && face1.rows == face2.rows && face1.cols > 0 && face1.cols == face2.cols)
+    {
+        double errL2 = norm(face1, face2, NORM_L2);
+        double similarity = errL2 / (double)(face1.rows * face2.cols);
+        return similarity;
+    }
+    else
+    {
+        return 10000000000.0;
+    }
+}
+/*
+if (frame.cols > DetectionWidth)
+    {
+        for (int i = 0; i < faces.size(); i++)
+        {
+            int scaled_x, scaled_y, scaled_h, scaled_w;
+
+            Point Pt1(faces[i].x, faces[i].y);
+            Point Pt2(faces[i].height + faces[i].x, faces[i].width + faces[i].y);
+
+            scaled_x = cvRound(faces[i].x * scale);
+            scaled_y = cvRound(faces[i].y * scale);
+            scaled_w = cvRound(faces[i].width * scale);
+            scaled_h = cvRound(faces[i].height * scale);
+
+            Point Pt3(scaled_x, scaled_y);
+            Point Pt4(scaled_h + scaled_x, scaled_w + scaled_y);
+
+            rectangle(img, Pt1, Pt2, Scalar(0, 255, 0), 2, 8, 0);
+            rectangle(frame, Pt3, Pt4, Scalar(0, 255, 0), 2, 8, 0);
+
+            Mat faceROI = equilizedImage(faces[i]);
+            imshow("faceimg", faceROI);
+            vector<Rect> eyes;
+            Point leftEye, rightEye;
+            //-- In each face, detect eyes
+            detectTheEyes(faceROI, leftEye, rightEye, eyes_cascade1, eyes_cascade2);
+            if (leftEye.x > 0 && rightEye.x > 0)
+            {
+                cout << "both detected" << endl;
+                Point center1(faces[i].x + leftEye.x, faces[i].y + leftEye.y);
+                Point center2(faces[i].x + rightEye.x, faces[i].y + rightEye.y);
+                int radius = 20;
+                circle(img, center1, radius, Scalar(255, 0, 0), 4, 8, 0);
+                circle(img, center2, radius, Scalar(255, 0, 0), 4, 8, 0);
+                //Center b2n the 2 eyes
+                Point2f eyesCenter;
+                eyesCenter.x = (leftEye.x + rightEye.x) * 0.5f;
+                eyesCenter.y = (leftEye.y + rightEye.y) * 0.5f;
+                //Angle b2n the 2 eyes
+                double dy = rightEye.y - leftEye.y;
+                double dx = rightEye.x - leftEye.x;
+                double len = sqrt(dx * dx + dy * dy);
+                //Convert radians to degrees
+
+                double angle = atan2(dy, dx) * 180.0 / CV_PI;
+
+                const double DESIRED_LEFT_EYE_X = 0.16;
+                const double DESIRED_LEFT_EYE_Y = 0.14;
+                const double DESIRED_RIGHT_EYE_X = (1.0f - 0.16);
+                //const double DESIRED_RIGHT_EYE_X = (0.8);
+
+                const int DESIRED_FACE_WIDTH = 70;
+                const int DESIRED_FACE_HEIGHT = 70;
+
+                double desired_len = (DESIRED_RIGHT_EYE_X - DESIRED_LEFT_EYE_X) * DESIRED_FACE_WIDTH;
+                double scale = desired_len / len;
+
+                Mat rotated_mat = getRotationMatrix2D(eyesCenter, angle, scale);
+
+                double ex = DESIRED_FACE_WIDTH * 0.5f - eyesCenter.x;
+                double ey = DESIRED_FACE_HEIGHT * DESIRED_LEFT_EYE_Y - eyesCenter.y;
+
+                rotated_mat.at<double>(0, 2) += ex;
+                rotated_mat.at<double>(1, 2) += ey;
+
+                Mat warped = Mat(DESIRED_FACE_HEIGHT, DESIRED_FACE_WIDTH, CV_8U, Scalar(128));
+                imshow("Face img b4 pre", faceROI);
+                warpAffine(faceROI, warped, rotated_mat, warped.size());
+                imshow("Face img afta pre", warped);
+                equilizefaceHalves(warped);
+                imshow("fame img equilized halves", warped);
+
+                Mat filtered = Mat(warped.size(), CV_8U);
+                bilateralFilter(warped, filtered, 0, 20.0, 2.0);
+                imshow("filtered", filtered);
+
+                Mat mask = Mat(warped.size(), CV_8U, Scalar(0));
+                Point faceCenter = Point(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.4));
+                Size size = Size(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.8));
+                ellipse(mask, faceCenter, size, 0, 0, 360, Scalar(255), FILLED);
+
+                dest = Mat(warped.size(), CV_8U, Scalar(128));
+                filtered.copyTo(dest, mask);
+                imshow("masked", dest);
+            }
+        }
+    }
+    */
