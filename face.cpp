@@ -2,15 +2,30 @@
 #include <opencv2/objdetect.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/face.hpp>
 
 using namespace cv;
+using namespace cv::face;
 using namespace std;
 
+enum MODES
+{
+    STARTUP_MODE,
+    DETECTION_MODE,
+    FACES_COLLECT_MODE,
+    TRAINING_MODE,
+    RECOG_MODE
+};
+
+MODES r_mode = STARTUP_MODE;
+const char *MODES_NAMES[] = {"startup", "detection", "collect Faces", "traim model", "recognize face"};
 Mat initialImageProcessing(Mat &frame, Rect &faceRect);
 void detectTheEyes(Mat &face, Point &leftEye, Point &rightEye, CascadeClassifier &eyesCascade1, CascadeClassifier &eyesCascade2);
 void detectObj(const Mat &img, CascadeClassifier &cascade, Rect &obj, int scaledw);
 void equilizefaceHalves(Mat &faceimg);
 double getSimilarity(const Mat face1, const Mat face2);
+void showTrainingDebugData(const Ptr<EigenFaceRecognizer> model, const int faceWidth, const int faceHeight);
+Mat getImgFro1DFMat(const Mat mat_row, int h);
 
 CascadeClassifier face_cascade;
 CascadeClassifier eyes_cascade1, eyes_cascade2;
@@ -23,6 +38,7 @@ int main(int argc, char *argv[])
     Mat previous_preprocessed_face;
     vector<Mat> preprocessedFaces;
     vector<int> labels;
+    r_mode = FACES_COLLECT_MODE;
     double pre_time = 0;
     try
     {
@@ -59,36 +75,70 @@ int main(int argc, char *argv[])
             cout << "No frame" << endl;
             break;
         }
-        Mat preprocessedFace = initialImageProcessing(frame, faceRect);
-        if (preprocessedFace.data)
+        if (r_mode == FACES_COLLECT_MODE)
         {
-            double IMAGE_DIFF = 10000000000.0;
-            if (previous_preprocessed_face.data)
+            Mat preprocessedFace = initialImageProcessing(frame, faceRect);
+            if (preprocessedFace.data)
             {
-                IMAGE_DIFF = getSimilarity(preprocessedFace, previous_preprocessed_face);
-            }
-            double currentTime = (double)getTickCount();
-            double TIME_DIFF = (currentTime - pre_time) / getTickFrequency();
+                double IMAGE_DIFF = 10000000000.0;
+                if (previous_preprocessed_face.data)
+                {
+                    IMAGE_DIFF = getSimilarity(preprocessedFace, previous_preprocessed_face);
+                }
+                double currentTime = (double)getTickCount();
+                double TIME_DIFF = (currentTime - pre_time) / getTickFrequency();
 
-            if ((IMAGE_DIFF > 0.3) && (TIME_DIFF > 1.0))
+                if ((IMAGE_DIFF > 0.3) && (TIME_DIFF > 1.0))
+                {
+                    Mat mirroredFace;
+                    flip(preprocessedFace, mirroredFace, 1);
+
+                    preprocessedFaces.push_back(preprocessedFace);
+                    preprocessedFaces.push_back(mirroredFace);
+                    labels.push_back(0);
+                    labels.push_back(0);
+
+                    previous_preprocessed_face = preprocessedFace;
+                    pre_time = currentTime;
+                    rectangle(frame, faceRect, Scalar(0, 255, 0), 2, 8, 0);
+
+                    if (preprocessedFaces.size() == 50)
+                        r_mode = TRAINING_MODE;
+
+                    cout << "no:" << preprocessedFaces.size() << endl;
+                }
+            }
+        }
+        else if (r_mode == TRAINING_MODE)
+        {
+            cout << "Faces collected...Initializing Training mode " << endl;
+            //String faceRecogAlg = "FaceRecognizer.Fisherfaces";
+            Ptr<EigenFaceRecognizer> model = EigenFaceRecognizer::create();
+            bool sufficientData = true;
+            if (preprocessedFaces.size() <= 0 || preprocessedFaces.size() != labels.size())
             {
-                Mat mirroredFace;
-                flip(preprocessedFace, mirroredFace, 1);
-
-                preprocessedFaces.push_back(preprocessedFace);
-                preprocessedFaces.push_back(mirroredFace);
-                labels.push_back(0);
-                labels.push_back(0);
-
-                previous_preprocessed_face = preprocessedFace;
-                pre_time = currentTime;
-                rectangle(frame, faceRect, Scalar(0, 255, 0), 2, 8, 0);
-
-                if (preprocessedFaces.size() == 50)
-                    break;
-
-                cout << "no:" << preprocessedFaces.size() << endl;
+                cout << "Warning! Insufficient Data for Training...Collect more Data" << endl;
+                sufficientData = false;
             }
+            if (sufficientData)
+            {
+                if (model.empty())
+                {
+                    cerr << "Error!! The face recognizer Algorithm is not Present in your openCv version" << endl;
+                    exit(-1);
+                }
+                model->train(preprocessedFaces, labels);
+                showTrainingDebugData(model, 70, 70);
+                r_mode = RECOG_MODE;
+            }
+            else
+            {
+                r_mode = FACES_COLLECT_MODE;
+            }
+        }
+        else if (r_mode == RECOG_MODE)
+        {
+            //Face Recog from the Model
         }
         imshow("ORfarme", frame);
 
@@ -97,7 +147,6 @@ int main(int argc, char *argv[])
         if (c == 27)
             break;
     }
-    cout << "Faces collected..." << endl;
     return 0;
 }
 
@@ -345,92 +394,36 @@ double getSimilarity(const Mat face1, const Mat face2)
         return 10000000000.0;
     }
 }
-/*
-if (frame.cols > DetectionWidth)
+
+void showTrainingDebugData(const Ptr<EigenFaceRecognizer> model, const int faceWidth, const int faceHeight)
+{
+    try
     {
-        for (int i = 0; i < faces.size(); i++)
+        Mat averageFaceRow = model->getMean();
+        Mat averageFace = getImgFro1DFMat(averageFaceRow, faceHeight);
+        imshow("Average face", averageFace);
+        Mat eiganVectors = model->getEigenVectors();
+
+        for (int i = 0; i < min(20, eiganVectors.cols); i++)
         {
-            int scaled_x, scaled_y, scaled_h, scaled_w;
-
-            Point Pt1(faces[i].x, faces[i].y);
-            Point Pt2(faces[i].height + faces[i].x, faces[i].width + faces[i].y);
-
-            scaled_x = cvRound(faces[i].x * scale);
-            scaled_y = cvRound(faces[i].y * scale);
-            scaled_w = cvRound(faces[i].width * scale);
-            scaled_h = cvRound(faces[i].height * scale);
-
-            Point Pt3(scaled_x, scaled_y);
-            Point Pt4(scaled_h + scaled_x, scaled_w + scaled_y);
-
-            rectangle(img, Pt1, Pt2, Scalar(0, 255, 0), 2, 8, 0);
-            rectangle(frame, Pt3, Pt4, Scalar(0, 255, 0), 2, 8, 0);
-
-            Mat faceROI = equilizedImage(faces[i]);
-            imshow("faceimg", faceROI);
-            vector<Rect> eyes;
-            Point leftEye, rightEye;
-            //-- In each face, detect eyes
-            detectTheEyes(faceROI, leftEye, rightEye, eyes_cascade1, eyes_cascade2);
-            if (leftEye.x > 0 && rightEye.x > 0)
-            {
-                cout << "both detected" << endl;
-                Point center1(faces[i].x + leftEye.x, faces[i].y + leftEye.y);
-                Point center2(faces[i].x + rightEye.x, faces[i].y + rightEye.y);
-                int radius = 20;
-                circle(img, center1, radius, Scalar(255, 0, 0), 4, 8, 0);
-                circle(img, center2, radius, Scalar(255, 0, 0), 4, 8, 0);
-                //Center b2n the 2 eyes
-                Point2f eyesCenter;
-                eyesCenter.x = (leftEye.x + rightEye.x) * 0.5f;
-                eyesCenter.y = (leftEye.y + rightEye.y) * 0.5f;
-                //Angle b2n the 2 eyes
-                double dy = rightEye.y - leftEye.y;
-                double dx = rightEye.x - leftEye.x;
-                double len = sqrt(dx * dx + dy * dy);
-                //Convert radians to degrees
-
-                double angle = atan2(dy, dx) * 180.0 / CV_PI;
-
-                const double DESIRED_LEFT_EYE_X = 0.16;
-                const double DESIRED_LEFT_EYE_Y = 0.14;
-                const double DESIRED_RIGHT_EYE_X = (1.0f - 0.16);
-                //const double DESIRED_RIGHT_EYE_X = (0.8);
-
-                const int DESIRED_FACE_WIDTH = 70;
-                const int DESIRED_FACE_HEIGHT = 70;
-
-                double desired_len = (DESIRED_RIGHT_EYE_X - DESIRED_LEFT_EYE_X) * DESIRED_FACE_WIDTH;
-                double scale = desired_len / len;
-
-                Mat rotated_mat = getRotationMatrix2D(eyesCenter, angle, scale);
-
-                double ex = DESIRED_FACE_WIDTH * 0.5f - eyesCenter.x;
-                double ey = DESIRED_FACE_HEIGHT * DESIRED_LEFT_EYE_Y - eyesCenter.y;
-
-                rotated_mat.at<double>(0, 2) += ex;
-                rotated_mat.at<double>(1, 2) += ey;
-
-                Mat warped = Mat(DESIRED_FACE_HEIGHT, DESIRED_FACE_WIDTH, CV_8U, Scalar(128));
-                imshow("Face img b4 pre", faceROI);
-                warpAffine(faceROI, warped, rotated_mat, warped.size());
-                imshow("Face img afta pre", warped);
-                equilizefaceHalves(warped);
-                imshow("fame img equilized halves", warped);
-
-                Mat filtered = Mat(warped.size(), CV_8U);
-                bilateralFilter(warped, filtered, 0, 20.0, 2.0);
-                imshow("filtered", filtered);
-
-                Mat mask = Mat(warped.size(), CV_8U, Scalar(0));
-                Point faceCenter = Point(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.4));
-                Size size = Size(cvRound(DESIRED_FACE_WIDTH * 0.5), cvRound(DESIRED_FACE_HEIGHT * 0.8));
-                ellipse(mask, faceCenter, size, 0, 0, 360, Scalar(255), FILLED);
-
-                dest = Mat(warped.size(), CV_8U, Scalar(128));
-                filtered.copyTo(dest, mask);
-                imshow("masked", dest);
-            }
+            Mat eiganVectorCol = eiganVectors.col(i).clone();
+            Mat eiganFace = getImgFro1DFMat(eiganVectorCol, faceHeight);
+            imshow(format("EiganFace%d", i), eiganFace);
         }
+        Mat eiganValues = model->getEigenValues();
+        vector<Mat> projections = model->getProjections();
+        cout << "Projections..." << projections.size() << endl;
     }
-    */
+    catch (Exception &e)
+    {
+        std::cerr << e.what() << '\n';
+    }
+}
+
+Mat getImgFro1DFMat(const Mat mat_row, int h)
+{
+    Mat rectMat = mat_row.reshape(1, h);
+    Mat dest;
+    normalize(rectMat, dest, 0, 255, NORM_MINMAX, CV_8UC1);
+    return dest;
+}
