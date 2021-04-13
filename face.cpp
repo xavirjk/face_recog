@@ -26,6 +26,7 @@ void equilizefaceHalves(Mat &faceimg);
 double getSimilarity(const Mat face1, const Mat face2);
 void showTrainingDebugData(const Ptr<EigenFaceRecognizer> model, const int faceWidth, const int faceHeight);
 Mat getImgFro1DFMat(const Mat mat_row, int h);
+Mat reconstructFace(const Ptr<EigenFaceRecognizer> model, const Mat preprocessed);
 
 CascadeClassifier face_cascade;
 CascadeClassifier eyes_cascade1, eyes_cascade2;
@@ -38,6 +39,7 @@ int main(int argc, char *argv[])
     Mat previous_preprocessed_face;
     vector<Mat> preprocessedFaces;
     vector<int> labels;
+    Ptr<EigenFaceRecognizer> model;
     r_mode = FACES_COLLECT_MODE;
     double pre_time = 0;
     try
@@ -75,9 +77,9 @@ int main(int argc, char *argv[])
             cout << "No frame" << endl;
             break;
         }
+        Mat preprocessedFace = initialImageProcessing(frame, faceRect);
         if (r_mode == FACES_COLLECT_MODE)
         {
-            Mat preprocessedFace = initialImageProcessing(frame, faceRect);
             if (preprocessedFace.data)
             {
                 double IMAGE_DIFF = 10000000000.0;
@@ -113,7 +115,7 @@ int main(int argc, char *argv[])
         {
             cout << "Faces collected...Initializing Training mode " << endl;
             //String faceRecogAlg = "FaceRecognizer.Fisherfaces";
-            Ptr<EigenFaceRecognizer> model = EigenFaceRecognizer::create();
+            model = EigenFaceRecognizer::create();
             bool sufficientData = true;
             if (preprocessedFaces.size() <= 0 || preprocessedFaces.size() != labels.size())
             {
@@ -139,6 +141,26 @@ int main(int argc, char *argv[])
         else if (r_mode == RECOG_MODE)
         {
             //Face Recog from the Model
+            Mat reconstructedFace;
+            reconstructedFace = reconstructFace(model, preprocessedFace);
+            if (reconstructedFace.data)
+            {
+                imshow("reconstructed face", reconstructedFace);
+                double similarity = getSimilarity(preprocessedFace, reconstructedFace);
+                string outputString;
+
+                if (similarity < 0.7f)
+                {
+                    int id = model->predict(preprocessedFace);
+                    outputString = to_string(id);
+                }
+                else
+                {
+                    outputString = "UNKNOWN";
+                }
+                cout << "Identity: " << outputString << " Similarity: " << similarity << endl;
+                //get confidence Ratio
+            }
         }
         imshow("ORfarme", frame);
 
@@ -426,4 +448,28 @@ Mat getImgFro1DFMat(const Mat mat_row, int h)
     Mat dest;
     normalize(rectMat, dest, 0, 255, NORM_MINMAX, CV_8UC1);
     return dest;
+}
+
+Mat reconstructFace(const Ptr<EigenFaceRecognizer> model, const Mat preprocessed)
+{
+    try
+    {
+        Mat eiganVectors = model->getEigenVectors();
+        Mat averageFaceRow = model->getMean();
+
+        int faceHeight = preprocessed.rows;
+
+        Mat projection = LDA::subspaceProject(eiganVectors, averageFaceRow, preprocessed.reshape(1, 1));
+        Mat reconstructionRow = LDA::subspaceReconstruct(eiganVectors, averageFaceRow, projection);
+
+        Mat reconstructionMat = reconstructionRow.reshape(1, faceHeight);
+        Mat reconstructedFace = Mat(reconstructionMat.size(), CV_8U);
+        reconstructionMat.convertTo(reconstructedFace, CV_8U, 1, 0);
+        return reconstructedFace;
+    }
+    catch (Exception &e)
+    {
+        std::cerr << e.what() << '\n';
+        return Mat();
+    }
 }
